@@ -1,6 +1,5 @@
-#frontend Code
 import tkinter as tk
-from tkinter import SEL, ttk
+from tkinter import ttk
 import pygame
 import socket
 import threading
@@ -15,62 +14,70 @@ class SoccerRobotController:
         self.root = tk.Tk()
         self.root.title("Soccer Robot Controller")
         self.root.geometry("1000x800")
+        
+        # Thread-safe communication
         self.data_queue = Queue()
-
-        # Controller state
+        self.log_queue = Queue()
+        self.gui_update_queue = Queue()
+        
+        # State variables
+        self.last_left = 0.0
+        self.last_right = 0.0
+        self.current_x = 150
+        self.frame_time = 0.015  # ~66Hz refresh rate
+        self.deadzone = 0.15
+        self.response_curve = CubicSpline([0, 0.2, 0.5, 0.8, 1], [0, 0.1, 0.4, 0.9, 1])
+        self.controller_mapping = {'right_x': 2, 'rt': 5, 'lt': 4}
+        
+        # Network setup
         self.sock = None
         self.connected = False
         self.stop_flag = False
-        self.deadzone = 0.15
-        self.response_curve = CubicSpline([0, 0.2, 0.5, 0.8, 1], [0, 0.1, 0.4, 0.9, 1])
-        self.controller_mapping = {
-            'right_x': 2,  # Verified Xbox controller mapping
-            'rt': 5,
-            'lt': 4
-        }
-        self.packet_count = 0
-        self.last_packet_time = time.time()
-
+        
         self._setup_gui()
         self._init_controller()
-        
-        threading.Thread(target=self._control_loop, daemon=True).start()
-        threading.Thread(target=self._network_loop, daemon=True).start()
+        self._start_control_thread()
+        self._start_network_thread()
+        self._start_gui_update_loop()
         
         self.root.protocol("WM_DELETE_WINDOW", self._shutdown)
         self.root.mainloop()
-
 
     def _setup_gui(self):
         # Connection Panel
         conn_frame = ttk.LabelFrame(self.root, text="Connection")
         conn_frame.pack(fill='x', padx=10, pady=5)
+        
         ttk.Label(conn_frame, text="Robot IP:").grid(row=0, column=0, padx=5)
         self.ip_entry = ttk.Entry(conn_frame, width=20)
         self.ip_entry.grid(row=0, column=1, padx=5)
         self.ip_entry.insert(0, "192.168.4.1")
+        
         self.connect_btn = ttk.Button(conn_frame, text="Connect", command=self._handle_connection)
         self.connect_btn.grid(row=0, column=2, padx=5)
+        
         self.status_led = tk.Canvas(conn_frame, width=20, height=20, bg='red')
         self.status_led.grid(row=0, column=3, padx=5)
         
         # Control Configuration
         config_frame = ttk.LabelFrame(self.root, text="Control Settings")
         config_frame.pack(fill='x', padx=10, pady=5)
+        
         ttk.Label(config_frame, text="Deadzone:").grid(row=0, column=0, padx=5)
         self.deadzone_label = ttk.Label(config_frame, text="0.15")
         self.deadzone_label.grid(row=0, column=2, padx=5)
-        self.deadzone_slider = ttk.Scale(config_frame, from_=0, to=50,
-                                      command=lambda v: self._update_deadzone(v))
-        self.deadzone_slider.grid(row=0, column=1, padx=5)
+        self.deadzone_slider = ttk.Scale(config_frame, from_=0, to=50, command=self._update_deadzone)
         self.deadzone_slider.set(15)
+        self.deadzone_slider.grid(row=0, column=1, padx=5)
         
         # Visualization Panel
         vis_frame = ttk.LabelFrame(self.root, text="Controller Input")
         vis_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
         self.steering_canvas = tk.Canvas(vis_frame, width=300, height=100, bg='#f0f0f0')
         self.steering_canvas.pack(pady=10)
-        self.steering_indicator = self.steering_canvas.create_rectangle(145, 20, 155, 80, fill='blue')
+        self.steering_indicator = self.steering_canvas.create_oval(145, 45, 155, 55, fill='blue')
+        
         self.rt_progress = ttk.Progressbar(vis_frame, length=200, mode='determinate')
         self.rt_progress.pack(pady=5)
         self.lt_progress = ttk.Progressbar(vis_frame, length=200, mode='determinate')
@@ -79,18 +86,24 @@ class SoccerRobotController:
         # Debug Information
         debug_frame = ttk.LabelFrame(self.root, text="System Status")
         debug_frame.pack(fill='both', expand=True, padx=10, pady=5)
-        self.debug_labels = {
-            'latency': ttk.Label(debug_frame, text="Latency: -- ms"),
-            'packet_rate': ttk.Label(debug_frame, text="Packet Rate: --/s"),
-            'raw_steering': ttk.Label(debug_frame, text="Raw Steering: --"),
-            'raw_throttle': ttk.Label(debug_frame, text="Raw Throttle: --")
+        
+        self.debug_vars = {
+            'steering': tk.StringVar(value="0.00"),
+            'throttle': tk.StringVar(value="0.00"),
+            'packet_rate': tk.StringVar(value="0.0/s")
         }
-        for label in self.debug_labels.values():
-            label.pack(anchor='w', padx=10, pady=2)
+        
+        ttk.Label(debug_frame, text="Steering:").pack(anchor='w', padx=10)
+        ttk.Label(debug_frame, textvariable=self.debug_vars['steering']).pack(anchor='w', padx=20)
+        ttk.Label(debug_frame, text="Throttle:").pack(anchor='w', padx=10)
+        ttk.Label(debug_frame, textvariable=self.debug_vars['throttle']).pack(anchor='w', padx=20)
+        ttk.Label(debug_frame, text="Packet Rate:").pack(anchor='w', padx=10)
+        ttk.Label(debug_frame, textvariable=self.debug_vars['packet_rate']).pack(anchor='w', padx=20)
         
         # System Log
         log_frame = ttk.LabelFrame(self.root, text="Event Log")
         log_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
         self.log_text = tk.Text(log_frame, wrap=tk.WORD, state='disabled')
         scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
@@ -98,41 +111,136 @@ class SoccerRobotController:
         scroll.pack(side='right', fill='y')
         
         # Emergency Stop
-        self.estop_btn = ttk.Button(self.root, text="EMERGENCY STOP", 
-                                  style='Emergency.TButton', command=self._emergency_stop)
+        self.estop_btn = ttk.Button(self.root, text="EMERGENCY STOP", command=self._emergency_stop)
         self.estop_btn.pack(pady=10)
-    def _update_display(self, steering, throttle, left, right):
-        """Update all GUI elements with current control values"""
-        try:
-            # Update steering visualization
-            x = 150 + steering * 100
-            self.steering_canvas.coords(self.steering_indicator, x-5, 20, x+5, 80)
-            
-            # Update trigger progress bars
-            self.rt_progress['value'] = max(0, throttle) * 100
-            self.lt_progress['value'] = max(0, -throttle) * 100
-            
-            # Update debug labels
-            self.debug_labels['raw_steering'].config(text=f"Steering: {steering:.2f}")
-            self.debug_labels['raw_throttle'].config(text=f"Throttle: {throttle:.2f}")
-            self.debug_labels['latency'].config(text=f"Motors: L={left:.2f}, R={right:.2f}")
-            
-        except Exception as e:
-            self._log(f"Display update error: {str(e)}", "ERROR")
 
     def _init_controller(self):
         pygame.init()
         pygame.joystick.init()
+        if pygame.joystick.get_count() > 0:
+            self.joystick = pygame.joystick.Joystick(0)
+            self.joystick.init()
+            self._log("Controller connected: " + self.joystick.get_name())
+        else:
+            self._log("No controller detected!", "ERROR")
+
+    def _start_control_thread(self):
+        def control_loop():
+            while not self.stop_flag:
+                self._process_controls()
+                time.sleep(0.02)  # 50Hz control loop
+        threading.Thread(target=control_loop, daemon=True).start()
+
+    def _process_controls(self):
+        if hasattr(self, 'joystick'):
+            try:
+                pygame.event.pump()
+                
+                # Read controller inputs
+                steering_raw = self.joystick.get_axis(self.controller_mapping['right_x'])
+                rt = (self.joystick.get_axis(5) + 1) / 2  # Right trigger
+                lt = (self.joystick.get_axis(4) + 1) / 2  # Left trigger
+                
+                # Process inputs
+                steering = self._process_axis(steering_raw)
+                throttle = rt - lt
+                left, right = self._differential_mix(throttle, steering)
+                
+                # Queue GUI updates
+                self.gui_update_queue.put(('steering', steering, throttle, left, right))
+                
+                # Send commands
+                if self.connected and (abs(left - self.last_left) > 0.01 or abs(right - self.last_right) > 0.01):
+                    self._send_command(left, right)
+                    self.last_left = left
+                    self.last_right = right
+                    
+            except pygame.error:
+                self._log("Controller disconnected!", "ERROR")
+                del self.joystick
+
+    def _start_gui_update_loop(self):
+        def update_gui():
+            while not self.gui_update_queue.empty():
+                update_type, *args = self.gui_update_queue.get_nowait()
+                if update_type == 'steering':
+                    self._update_display(*args)
+                elif update_type == 'log':
+                    self._write_log(*args)
+            
+            # Process logs
+            while not self.log_queue.empty():
+                message, level = self.log_queue.get_nowait()
+                self._write_log(message, level)
+            
+            self.root.after(15, update_gui)
+        update_gui()
+
+    def _update_display(self, steering, throttle, left, right):
+        """Update GUI elements with current values (main thread only)"""
+        # Steering indicator
+        x = 150 + steering * 100
+        if abs(x - self.current_x) > 2:
+            self.steering_canvas.coords(self.steering_indicator, x-5, 45, x+5, 55)
+            self.current_x = x
+        
+        # Progress bars
+        self.rt_progress['value'] = max(0, throttle) * 100
+        self.lt_progress['value'] = max(0, -throttle) * 100
+        
+        # Debug labels
+        self.debug_vars['steering'].set(f"{steering:.2f}")
+        self.debug_vars['throttle'].set(f"{throttle:.2f}")
+
+    def _differential_mix(self, throttle, steering):
+        left = throttle + steering
+        right = throttle - steering
+        scale = 1.0 / max(abs(left), abs(right), 1.0)
+        return left * scale, right * scale
+
+    def _process_axis(self, value):
+        abs_val = abs(value)
+        if abs_val < self.deadzone:
+            return 0.0
+        return self.response_curve((abs_val - self.deadzone) / (1 - self.deadzone)) * np.sign(value)
+
+    def _send_command(self, left, right):
         try:
-            if pygame.joystick.get_count() > 0:
-                self.joystick = pygame.joystick.Joystick(0)
-                self.joystick.init()
-                self._log(f"Controller connected: {self.joystick.get_name()}", "INFO")
-                self._log(f"Detected {self.joystick.get_numaxes()} axes", "DEBUG")
-            else:
-                self._log("No controller detected!", "ERROR")
+            cmd = {
+                'timestamp': time.time(),
+                'left': np.clip(left, -1.0, 1.0),
+                'right': np.clip(right, -1.0, 1.0)
+            }
+            data = json.dumps(cmd, separators=(',', ':')).encode()
+            self.data_queue.put_nowait(data)
         except Exception as e:
-            self._log(f"Controller init error: {str(e)}", "ERROR")
+            self._log(f"Command error: {str(e)}", "ERROR")
+
+    def _start_network_thread(self):
+        def network_loop():
+            packet_count = 0
+            last_update = time.time()
+            
+            while not self.stop_flag:
+                try:
+                    data = self.data_queue.get(timeout=0.1)
+                    if self.connected:
+                        header = len(data).to_bytes(4, 'big')
+                        self.sock.sendall(header + data)
+                        packet_count += 1
+                        
+                        # Update packet rate every second
+                        if time.time() - last_update >= 1:
+                            self.debug_vars['packet_rate'].set(f"{packet_count}/s")
+                            packet_count = 0
+                            last_update = time.time()
+                            
+                except Empty:
+                    continue
+                except Exception as e:
+                    self._log(f"Network error: {str(e)}", "ERROR")
+                    self.connected = False
+        threading.Thread(target=network_loop, daemon=True).start()
 
     def _handle_connection(self):
         if self.connected:
@@ -143,20 +251,15 @@ class SoccerRobotController:
     def _connect(self):
         ip = self.ip_entry.get()
         try:
-            if self.sock:
-                self.sock.close()
-            self.sock = socket.socket()
-            self.sock.settimeout(2)
-            self.sock.connect((ip, 65432))
+            self.sock = socket.create_connection((ip, 65432), timeout=2)
             self.connected = True
             self.connect_btn.config(text="Disconnect")
             self.status_led.config(bg='green')
             self._log(f"Connected to {ip}")
         except Exception as e:
-            self.connected = False
-            self.connect_btn.config(text="Connect")
-            self.status_led.config(bg='red')
             self._log(f"Connection failed: {str(e)}", "ERROR")
+            self.connected = False
+            self.status_led.config(bg='red')
 
     def _disconnect(self):
         if self.sock:
@@ -165,131 +268,6 @@ class SoccerRobotController:
         self.connect_btn.config(text="Connect")
         self.status_led.config(bg='red')
         self._log("Disconnected from robot")
-
-    def _differential_mix(self, throttle, steering):
-        """
-        Convert throttle (forward/backward) and steering (left/right) 
-        into left/right motor speeds for tank drive.
-        """
-        left = throttle + steering
-        right = throttle - steering
-    
-        # Normalize to prevent exceeding ±1.0
-        max_speed = max(abs(left), abs(right), 1.0)
-        return left / max_speed, right / max_speed
-
-    def _control_loop(self):
-        """Send commands only when values change significantly"""
-        last_left = 0.0
-        last_right = 0.0
-        threshold = 0.01  # 1% change threshold
-
-        while not self.stop_flag:
-            if hasattr(self, 'joystick'):
-                try:
-                    pygame.event.pump()
-                
-                    # Get raw controller inputs
-                    steering_raw = self.joystick.get_axis(self.controller_mapping['right_x'])
-                    rt = (self.joystick.get_axis(self.controller_mapping['rt']) + 1) / 2
-                    lt = (self.joystick.get_axis(self.controller_mapping['lt']) + 1) / 2
-                
-                    # Process inputs
-                    steering = self._process_axis(steering_raw)
-                    throttle = rt - lt
-                    # Calculate motor speeds
-                    left, right = self._differential_mix(throttle, steering)
-                
-                    # Only send if values changed significantly
-                    if (abs(left - last_left) > threshold or 
-                        abs(right - last_right) > threshold):
-                        self._send_command(left, right)
-                        last_left = left
-                        last_right = right
-                
-                    # Update UI
-                    self._update_display(steering, throttle, left, right)
-                
-                except pygame.error:
-                    self._log("Controller disconnected!", "ERROR")
-                    del self.joystick
-            time.sleep(0.02)  # 50Hz update rate (was 0.02)
-
-    def _process_axis(self, value):
-        abs_val = abs(value)
-        if abs_val < self.deadzone:
-            return 0.0
-        return self.response_curve((abs_val - self.deadzone) / (1 - self.deadzone)) * np.sign(value)
-
-    def _calculate_speeds(self, throttle, steering):
-        left = throttle + steering
-        right = throttle - steering
-        max_speed = max(abs(left), abs(right), 1.0)
-        return left/max_speed, right/max_speed
-
-    def _send_command(self, left, right):
-        """Validate and queue motor commands"""
-        # Deadzone for zero values
-        if abs(left) < 0.01 and abs(right) < 0.01:
-            left = right = 0.0
-        try:
-            # Validate input types and ranges
-            if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
-                raise TypeError("Invalid command types")
-                
-            cmd = {
-                'timestamp': time.time(),
-                'left': np.clip(float(left), -1.0, 1.0),
-                'right': np.clip(float(right), -1.0, 1.0)
-            }
-            
-            # Optimized JSON serialization
-            json_data = json.dumps(cmd, ensure_ascii=False, separators=(',', ':')).encode()
-            
-            # Size validation
-            if len(json_data) > 1024:
-                raise ValueError(f"Command too large ({len(json_data)} bytes)")
-            
-            # Log actual JSON being sent
-            self._log(f"Sending: {json_data.decode()}", "DEBUG")
-            
-            self.data_queue.put(json_data)
-            
-        except Exception as e:
-            self._log(f"Command error: {str(e)}", "ERROR")
-            self.connected = False
-            self.status_led.config(bg='red')
-
-    def _network_loop(self):
-        """Optimized network handler with rate limiting"""
-        while not self.stop_flag:
-            if self.connected and hasattr(self, 'joystick'):
-                try:
-                    # Get data with timeout
-                    json_data = self.data_queue.get(timeout=0.01)
-                    
-                    # Send with header
-                    header = len(json_data).to_bytes(4, 'big')
-                    self.sock.sendall(header + json_data)
-                    
-                    # Update network stats
-                    self.packet_count += 1
-                    now = time.time()
-                    if now - self.last_packet_time >= 1:
-                        rate = self.packet_count / (now - self.last_packet_time)
-                        self.debug_labels['packet_rate'].config(text=f"Packet Rate: {rate:.1f}/s")
-                        self.packet_count = 0
-                        self.last_packet_time = now
-                        
-                except Empty:
-                    pass  # Normal queue timeout
-                except socket.error as e:
-                    self._log(f"Socket error: {str(e)}", "ERROR")
-                    self.connected = False
-                except Exception as e:
-                    self._log(f"Network error: {str(e)}", "ERROR")
-                    self.connected = False
-                    self.status_led.config(bg='red')
 
     def _emergency_stop(self):
         if self.connected:
@@ -303,6 +281,9 @@ class SoccerRobotController:
         self.deadzone_label.config(text=f"{self.deadzone:.2f}")
 
     def _log(self, message, level="INFO"):
+        self.log_queue.put((message, level))
+
+    def _write_log(self, message, level):
         timestamp = time.strftime("%H:%M:%S")
         color_map = {
             "INFO": "black",
