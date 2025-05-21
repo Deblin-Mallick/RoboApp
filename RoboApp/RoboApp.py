@@ -3,13 +3,14 @@ from tkinter import ttk
 import pygame
 import socket
 import threading
-import json
+import cbor2
 import time
 import numpy as np
 from scipy.interpolate import CubicSpline
 from queue import Queue, Empty
 
 class SoccerRobotController:
+    """GUI and network controller for a soccer robot using a gamepad."""
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Soccer Robot Controller")
@@ -66,7 +67,7 @@ class SoccerRobotController:
         ttk.Label(config_frame, text="Deadzone:").grid(row=0, column=0, padx=5)
         self.deadzone_label = ttk.Label(config_frame, text="0.15")
         self.deadzone_label.grid(row=0, column=2, padx=5)
-        self.deadzone_slider = ttk.Scale(config_frame, from_=0, to=50, command=self._update_deadzone)
+        self.deadzone_slider = ttk.Scale(config_frame, from_=0, to=30, command=self._update_deadzone)
         self.deadzone_slider.set(15)
         self.deadzone_slider.grid(row=0, column=1, padx=5)
         
@@ -117,6 +118,10 @@ class SoccerRobotController:
     def _init_controller(self):
         pygame.init()
         pygame.joystick.init()
+        self.joystick = None
+        self._try_connect_controller()
+
+    def _try_connect_controller(self):
         if pygame.joystick.get_count() > 0:
             self.joystick = pygame.joystick.Joystick(0)
             self.joystick.init()
@@ -126,13 +131,21 @@ class SoccerRobotController:
 
     def _start_control_thread(self):
         def control_loop():
+            last_check = time.time()
             while not self.stop_flag:
                 self._process_controls()
+                # Try to reconnect controller every 2 seconds if not connected
+                if not hasattr(self, 'joystick') or self.joystick is None:
+                    if time.time() - last_check > 2:
+                        pygame.joystick.quit()
+                        pygame.joystick.init()
+                        self._try_connect_controller()
+                        last_check = time.time()
                 time.sleep(0.02)  # 50Hz control loop
         threading.Thread(target=control_loop, daemon=True).start()
 
     def _process_controls(self):
-        if hasattr(self, 'joystick'):
+        if hasattr(self, 'joystick') and self.joystick is not None:
             try:
                 pygame.event.pump()
                 
@@ -157,7 +170,7 @@ class SoccerRobotController:
                     
             except pygame.error:
                 self._log("Controller disconnected!", "ERROR")
-                del self.joystick
+                self.joystick = None
 
     def _start_gui_update_loop(self):
         def update_gui():
@@ -167,6 +180,10 @@ class SoccerRobotController:
                     self._update_display(*args)
                 elif update_type == 'log':
                     self._write_log(*args)
+                elif update_type == 'connection_status':
+                    is_connected = args[0]
+                    self.connect_btn.config(text="Disconnect" if is_connected else "Connect")
+                    self.status_led.config(bg='green' if is_connected else 'red')
             
             # Process logs
             while not self.log_queue.empty():
@@ -211,7 +228,7 @@ class SoccerRobotController:
                 'left': np.clip(left, -1.0, 1.0),
                 'right': np.clip(right, -1.0, 1.0)
             }
-            data = json.dumps(cmd, separators=(',', ':')).encode()
+            data = cbor2.dumps(cmd)  # Changed from json.dumps
             self.data_queue.put_nowait(data)
         except Exception as e:
             self._log(f"Command error: {str(e)}", "ERROR")
@@ -252,21 +269,26 @@ class SoccerRobotController:
         ip = self.ip_entry.get()
         try:
             self.sock = socket.create_connection((ip, 65432), timeout=2)
+
+            # Sync time
+            pc_time = time.time()
+            sync_msg = {'type': 'sync', 'pc_time': pc_time}
+            data = cbor2.dumps(sync_msg)
+            self.sock.sendall(len(data).to_bytes(4, 'big') + data)
+
             self.connected = True
-            self.connect_btn.config(text="Disconnect")
-            self.status_led.config(bg='green')
+            self.gui_update_queue.put(('connection_status', True))
             self._log(f"Connected to {ip}")
         except Exception as e:
             self._log(f"Connection failed: {str(e)}", "ERROR")
             self.connected = False
-            self.status_led.config(bg='red')
+            self.gui_update_queue.put(('connection_status', False))
 
     def _disconnect(self):
         if self.sock:
             self.sock.close()
         self.connected = False
-        self.connect_btn.config(text="Connect")
-        self.status_led.config(bg='red')
+        self.gui_update_queue.put(('connection_status', False))
         self._log("Disconnected from robot")
 
     def _emergency_stop(self):
@@ -300,6 +322,7 @@ class SoccerRobotController:
         self.stop_flag = True
         if self.sock:
             self.sock.close()
+        pygame.quit()
         self.root.destroy()
 
 if __name__ == "__main__":
