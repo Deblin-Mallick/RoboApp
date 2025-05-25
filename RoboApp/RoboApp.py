@@ -157,17 +157,35 @@ class SoccerRobotController:
                 # Process inputs
                 steering = self._process_axis(steering_raw)
                 throttle = rt - lt
-                left, right = self._differential_mix(throttle, steering)
+                
+                # --- 4-wheel independent mixing ---
+                # For standard 4WD: left = throttle + steering, right = throttle - steering
+                left = throttle + steering
+                right = throttle - steering
+                scale = 1.0 / max(abs(left), abs(right), 1.0)
+                left = left * scale
+                right = right * scale
+
+                # Assign to four wheels (customize as needed for your robot)
+                lf = left
+                lr = left
+                rf = right
+                rr = right
                 
                 # Queue GUI updates
                 self.gui_update_queue.put(('steering', steering, throttle, left, right))
                 
-                # Send commands
-                if self.connected and (abs(left - self.last_left) > 0.01 or abs(right - self.last_right) > 0.01):
-                    self._send_command(left, right)
-                    self.last_left = left
-                    self.last_right = right
-                    
+                # Send commands only if any wheel value changes
+                if self.connected and (
+                    not hasattr(self, 'last_lf') or
+                    abs(lf - getattr(self, 'last_lf', 0.0)) > 0.01 or
+                    abs(lr - getattr(self, 'last_lr', 0.0)) > 0.01 or
+                    abs(rf - getattr(self, 'last_rf', 0.0)) > 0.01 or
+                    abs(rr - getattr(self, 'last_rr', 0.0)) > 0.01
+                ):
+                    self._send_command(lf, lr, rf, rr)
+                    self.last_lf, self.last_lr, self.last_rf, self.last_rr = lf, lr, rf, rr
+
             except pygame.error:
                 self._log("Controller disconnected!", "ERROR")
                 self.joystick = None
@@ -221,21 +239,22 @@ class SoccerRobotController:
             return 0.0
         return self.response_curve((abs_val - self.deadzone) / (1 - self.deadzone)) * np.sign(value)
 
-    def _send_command(self, left, right):
+    def _send_command(self, lf, lr, rf, rr):
         try:
             cmd = {
                 'timestamp': time.time(),
-                'left': np.clip(left, -1.0, 1.0),
-                'right': np.clip(right, -1.0, 1.0)
+                'lf': np.clip(lf, -1.0, 1.0),
+                'lr': np.clip(lr, -1.0, 1.0),
+                'rf': np.clip(rf, -1.0, 1.0),
+                'rr': np.clip(rr, -1.0, 1.0)
             }
-            data = cbor2.dumps(cmd)  # Changed from json.dumps
+            data = cbor2.dumps(cmd)
             self.data_queue.put_nowait(data)
 
-            # Only log when left/right change
-            if (abs(left - self.last_left) > 0.01) or (abs(right - self.last_right) > 0.01):
-                self._log(f"Sent command: left={left:.2f}, right={right:.2f}")
-                self.last_left = left
-                self.last_right = right
+            # Only log when any wheel value changes
+            self._log(
+                f"Sent command: lf={lf:.2f}, lr={lr:.2f}, rf={rf:.2f}, rr={rr:.2f}"
+            )
 
         except Exception as e:
             self._log(f"Command error: {str(e)}", "ERROR")
