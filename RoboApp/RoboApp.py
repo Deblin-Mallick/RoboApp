@@ -12,22 +12,25 @@ from queue import Queue, Empty
 class SoccerRobotController:
     """GUI and network controller for a soccer robot using a gamepad."""
     def __init__(self):
+        # Initialize main window
         self.root = tk.Tk()
         self.root.title("Soccer Robot Controller")
         self.root.geometry("1000x800")
         
-        # Thread-safe communication
+        # Thread-safe communication queues
         self.data_queue = Queue()
         self.log_queue = Queue()
         self.gui_update_queue = Queue()
         
-        # State variables
+        # State variables for control and display
         self.last_left = 0.0
         self.last_right = 0.0
         self.current_x = 150
         self.frame_time = 0.015  # ~66Hz refresh rate
         self.deadzone = 0.15
+        # Response curve for joystick input smoothing
         self.response_curve = CubicSpline([0, 0.2, 0.5, 0.8, 1], [0, 0.1, 0.4, 0.9, 1])
+        # Controller axis mapping
         self.controller_mapping = {'right_x': 2, 'rt': 5, 'lt': 4}
         
         # Network setup
@@ -35,16 +38,18 @@ class SoccerRobotController:
         self.connected = False
         self.stop_flag = False
         
+        # Build GUI and start all threads
         self._setup_gui()
         self._init_controller()
         self._start_control_thread()
         self._start_network_thread()
         self._start_gui_update_loop()
-        
+        self._start_connection_monitor()
         self.root.protocol("WM_DELETE_WINDOW", self._shutdown)
         self.root.mainloop()
 
     def _setup_gui(self):
+        """Build all GUI panels and widgets."""
         # Connection Panel
         conn_frame = ttk.LabelFrame(self.root, text="Connection")
         conn_frame.pack(fill='x', padx=10, pady=5)
@@ -116,12 +121,14 @@ class SoccerRobotController:
         self.estop_btn.pack(pady=10)
 
     def _init_controller(self):
+        """Initialize pygame and joystick/controller."""
         pygame.init()
         pygame.joystick.init()
         self.joystick = None
         self._try_connect_controller()
 
     def _try_connect_controller(self):
+        """Attempt to connect to the first available joystick."""
         if pygame.joystick.get_count() > 0:
             self.joystick = pygame.joystick.Joystick(0)
             self.joystick.init()
@@ -130,6 +137,7 @@ class SoccerRobotController:
             self._log("No controller detected!", "ERROR")
 
     def _start_control_thread(self):
+        """Start a thread to poll controller and process inputs."""
         def control_loop():
             last_check = time.time()
             while not self.stop_flag:
@@ -145,6 +153,7 @@ class SoccerRobotController:
         threading.Thread(target=control_loop, daemon=True).start()
 
     def _process_controls(self):
+        """Read controller, process axes, and send commands if changed."""
         if hasattr(self, 'joystick') and self.joystick is not None:
             try:
                 pygame.event.pump()
@@ -158,15 +167,14 @@ class SoccerRobotController:
                 steering = self._process_axis(steering_raw)
                 throttle = rt - lt
                 
-                # --- 4-wheel independent mixing ---
-                # For standard 4WD: left = throttle + steering, right = throttle - steering
+                # 4-wheel independent mixing (tank drive by default)
                 left = throttle + steering
                 right = throttle - steering
                 scale = 1.0 / max(abs(left), abs(right), 1.0)
                 left = left * scale
                 right = right * scale
 
-                # Assign to four wheels (customize as needed for your robot)
+                # Assign to four wheels (customize for other drive types)
                 lf = left
                 lr = left
                 rf = right
@@ -191,6 +199,7 @@ class SoccerRobotController:
                 self.joystick = None
 
     def _start_gui_update_loop(self):
+        """Main GUI update loop: processes queued updates and logs."""
         def update_gui():
             while not self.gui_update_queue.empty():
                 update_type, *args = self.gui_update_queue.get_nowait()
@@ -213,33 +222,26 @@ class SoccerRobotController:
 
     def _update_display(self, steering, throttle, left, right):
         """Update GUI elements with current values (main thread only)"""
-        # Steering indicator
         x = 150 + steering * 100
         if abs(x - self.current_x) > 2:
             self.steering_canvas.coords(self.steering_indicator, x-5, 45, x+5, 55)
             self.current_x = x
         
-        # Progress bars
         self.rt_progress['value'] = max(0, throttle) * 100
         self.lt_progress['value'] = max(0, -throttle) * 100
         
-        # Debug labels
         self.debug_vars['steering'].set(f"{steering:.2f}")
         self.debug_vars['throttle'].set(f"{throttle:.2f}")
 
-    def _differential_mix(self, throttle, steering):
-        left = throttle + steering
-        right = throttle - steering
-        scale = 1.0 / max(abs(left), abs(right), 1.0)
-        return left * scale, right * scale
-
     def _process_axis(self, value):
+        """Apply deadzone and response curve to joystick axis."""
         abs_val = abs(value)
         if abs_val < self.deadzone:
             return 0.0
         return self.response_curve((abs_val - self.deadzone) / (1 - self.deadzone)) * np.sign(value)
 
     def _send_command(self, lf, lr, rf, rr):
+        """Send 4-wheel command as CBOR to the backend."""
         try:
             cmd = {
                 'timestamp': time.time(),
@@ -260,6 +262,7 @@ class SoccerRobotController:
             self._log(f"Command error: {str(e)}", "ERROR")
 
     def _start_network_thread(self):
+        """Start background thread for sending commands over TCP."""
         def network_loop():
             packet_count = 0
             last_update = time.time()
@@ -269,34 +272,39 @@ class SoccerRobotController:
                     data = self.data_queue.get(timeout=0.1)
                     if self.connected:
                         header = len(data).to_bytes(4, 'big')
-                        self.sock.sendall(header + data)
+                        try:
+                            self.sock.sendall(header + data)
+                        except Exception as e:
+                            self._log(f"Network error: {str(e)}", "ERROR")
+                            self._disconnect()  # Ensure GUI is updated on error
+                            continue
                         packet_count += 1
-                        
                         # Update packet rate every second
                         if time.time() - last_update >= 1:
                             self.debug_vars['packet_rate'].set(f"{packet_count}/s")
                             packet_count = 0
                             last_update = time.time()
-                            
                 except Empty:
                     continue
                 except Exception as e:
                     self._log(f"Network error: {str(e)}", "ERROR")
-                    self.connected = False
+                    self._disconnect()  # Ensure GUI is updated on error
         threading.Thread(target=network_loop, daemon=True).start()
 
     def _handle_connection(self):
+        """Connect or disconnect depending on current state."""
         if self.connected:
             self._disconnect()
         else:
             self._connect()
 
     def _connect(self):
+        """Establish TCP connection to backend."""
         ip = self.ip_entry.get()
         try:
             self.sock = socket.create_connection((ip, 65432), timeout=2)
 
-            # Sync time
+            # Sync time (optional)
             pc_time = time.time()
             sync_msg = {'type': 'sync', 'pc_time': pc_time}
             data = cbor2.dumps(sync_msg)
@@ -310,28 +318,63 @@ class SoccerRobotController:
             self.connected = False
             self.gui_update_queue.put(('connection_status', False))
 
+    def _is_socket_closed(self):
+        """Check if the socket is closed by peeking non-blocking."""
+        if not self.sock:
+            return True
+        try:
+            data = self.sock.recv(16, socket.MSG_DONTWAIT | socket.MSG_PEEK)
+            if len(data) == 0:
+                return True  # Socket closed
+        except BlockingIOError:
+            return False  # No data, but socket is open
+        except ConnectionResetError:
+            return True
+        except Exception:
+            return False
+        return False
+
+    def _start_connection_monitor(self):
+        """Start a thread to monitor connection liveness and update GUI on disconnect."""
+        def monitor():
+            while not self.stop_flag:
+                if self.connected and self._is_socket_closed():
+                    self._log("Lost connection to backend.", "ERROR")
+                    self._disconnect()  # Ensure GUI is updated on error
+                time.sleep(0.5)
+        threading.Thread(target=monitor, daemon=True).start()
+
     def _disconnect(self):
+        """Disconnect from backend and update GUI."""
         if self.sock:
-            self.sock.close()
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
         self.connected = False
         self.gui_update_queue.put(('connection_status', False))
         self._log("Disconnected from robot")
 
     def _emergency_stop(self):
+        """Send zero command to all wheels and update GUI."""
         if self.connected:
-            self._send_command(0, 0)
+            self._send_command(0, 0, 0, 0)
         self._log("EMERGENCY STOP ACTIVATED", "CRITICAL")
         self.status_led.config(bg='red')
         self.connected = False
 
     def _update_deadzone(self, value):
+        """Update deadzone from slider."""
         self.deadzone = float(value)/100
         self.deadzone_label.config(text=f"{self.deadzone:.2f}")
 
     def _log(self, message, level="INFO"):
+        """Queue a log message for display."""
         self.log_queue.put((message, level))
 
     def _write_log(self, message, level):
+        """Write a log message to the GUI log window."""
         timestamp = time.strftime("%H:%M:%S")
         color_map = {
             "INFO": "black",
@@ -345,6 +388,7 @@ class SoccerRobotController:
         self.log_text.config(state='disabled')
 
     def _shutdown(self):
+        """Clean up and close the application."""
         self.stop_flag = True
         if self.sock:
             self.sock.close()
