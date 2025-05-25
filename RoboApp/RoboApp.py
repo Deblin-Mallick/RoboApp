@@ -52,7 +52,7 @@ class SoccerRobotController:
         ttk.Label(conn_frame, text="Robot IP:").grid(row=0, column=0, padx=5)
         self.ip_entry = ttk.Entry(conn_frame, width=20)
         self.ip_entry.grid(row=0, column=1, padx=5)
-        self.ip_entry.insert(0, "192.168.4.1")
+        self.ip_entry.insert(0, "192.168.2.179")
         
         self.connect_btn = ttk.Button(conn_frame, text="Connect", command=self._handle_connection)
         self.connect_btn.grid(row=0, column=2, padx=5)
@@ -230,6 +230,13 @@ class SoccerRobotController:
             }
             data = cbor2.dumps(cmd)  # Changed from json.dumps
             self.data_queue.put_nowait(data)
+
+            # Only log when left/right change
+            if (abs(left - self.last_left) > 0.01) or (abs(right - self.last_right) > 0.01):
+                self._log(f"Sent command: left={left:.2f}, right={right:.2f}")
+                self.last_left = left
+                self.last_right = right
+
         except Exception as e:
             self._log(f"Command error: {str(e)}", "ERROR")
 
