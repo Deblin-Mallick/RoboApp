@@ -61,6 +61,8 @@ class SoccerRobot:
         self.watchdog_timer = utime.ticks_ms()
         self.safety_active = False
         self.last_cmd = {'lf': 0.0, 'lr': 0.0, 'rf': 0.0, 'rr': 0.0}
+        self.led = Pin("LED", Pin.OUT)  # Onboard LED
+        self.led.value(0)  # Start with LED off
         self._connect_wifi()
         _thread.start_new_thread(self._safety_monitor, ())
         self._start_server()
@@ -68,7 +70,6 @@ class SoccerRobot:
     def _connect_wifi(self):
         sta_if = network.WLAN(network.STA_IF)
         sta_if.active(True)
-        # CRITICAL: Disable WiFi power management
         sta_if.config(pm=0xa11140)
         ssid = 'OpenWrt'
         password = 'iitmadras'
@@ -89,6 +90,7 @@ class SoccerRobot:
             reset()
         ip = sta_if.ifconfig()[0]
         print(f"Connected. IP: {ip}")
+        self.led.value(1)  # LED ON when WiFi is connected
 
     def _start_server(self):
         s = socket.socket()
@@ -116,6 +118,8 @@ class SoccerRobot:
                     buffer = b""
                     expected_len = None
                     print("Client connection timeout")
+                    self.led.value(1)  # LED ON: WiFi OK, no client
+
                 # Accept new client
                 if not client_sock:
                     events = poller.poll(10)
@@ -128,6 +132,8 @@ class SoccerRobot:
                             buffer = b""
                             expected_len = None
                             last_heartbeat = utime.ticks_ms()
+                            self.led.value(1)  # LED ON: client connected
+
                 # Process client data
                 if client_sock:
                     events = poller.poll(0)
@@ -157,20 +163,22 @@ class SoccerRobot:
                                     client_sock.close()
                                     client_sock = None
                                     print("Client disconnected")
+                                    self.led.value(1)  # LED ON: WiFi OK, no client
                             except OSError as e:
                                 if e.args[0] not in (11, 104):  # EAGAIN, ECONNRESET
                                     poller.unregister(client_sock)
                                     client_sock.close()
                                     client_sock = None
                                     print(f"Client error: {e}")
+                                    self.led.value(1)  # LED ON: WiFi OK, no client
             except Exception as e:
                 print(f"Server error: {e}")
                 if client_sock:
                     poller.unregister(client_sock)
                     client_sock.close()
                     client_sock = None
+                    self.led.value(1)  # LED ON: WiFi OK, no client
 
-            # Memory and performance monitoring
             if utime.ticks_diff(utime.ticks_ms(), loop_start) > 100:
                 print(f"!!! CPU WARNING: Server loop took {utime.ticks_diff(utime.ticks_ms(), loop_start)} ms !!!")
             gc.collect()
@@ -196,7 +204,7 @@ class SoccerRobot:
                 try:
                     sock.sendall(len(resp_data).to_bytes(4, 'big') + resp_data)
                 except OSError:
-                    pass  # Client disconnected during send
+                    pass
         except Exception as e:
             print(f"Command error: {repr(e)}")
 
@@ -212,8 +220,15 @@ class SoccerRobot:
                         motor.in1.value(0)
                         motor.in2.value(0)
                         motor.pwm.duty_u16(0)
+                    # Optional: Blink LED rapidly in emergency stop
+                    for _ in range(6):
+                        self.led.value(1)
+                        utime.sleep_ms(100)
+                        self.led.value(0)
+                        utime.sleep_ms(100)
                 else:
                     self.debug.log(f"Safety cleared (diff={diff})")
+                    self.led.value(1)  # LED ON: system safe
                 last_safety_state = in_safety
             self.safety_active = in_safety
             utime.sleep(0.1)
