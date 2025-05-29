@@ -13,17 +13,16 @@ class SoccerRobotController:
     CONTROL_RATE_HZ = 50  # Control loop frequency (Hz)
 
     def __init__(self):
-        # --- Main Window Setup ---
         self.root = tk.Tk()
         self.root.title("Soccer Robot Controller")
         self.root.geometry("1000x800")
 
-        # --- Queues for Thread-Safe Communication ---
+        # Queues for thread-safe communication
         self.data_queue = Queue()
         self.log_queue = Queue()
         self.gui_update_queue = Queue()
 
-        # --- State Variables ---
+        # State variables
         self.sock = None
         self.connected = False
         self.stop_flag = threading.Event()
@@ -31,13 +30,11 @@ class SoccerRobotController:
         self.cmd_send_times = {}
         self.deadzone = 0.15
         self.response_curve = CubicSpline([0, 0.2, 0.5, 0.8, 1], [0, 0.1, 0.4, 0.9, 1])
-        # Add 'a_button' mapping for Xbox controller (usually button 0)
         self.controller_mapping = {'right_x': 2, 'rt': 5, 'lt': 4, 'a_button': 0}
         self.current_x = 150
-        self.logging_enabled = True  # Logging is enabled by default
-        self.a_button_prev_state = False  # Track A button state
+        self.logging_enabled = True
+        self.a_button_prev_state = False
 
-        # --- Build GUI and Start Threads ---
         self._setup_gui()
         self._log("Event log test: If you see this, logging works!")
         self._init_controller()
@@ -67,6 +64,12 @@ class SoccerRobotController:
         self.deadzone_slider = ttk.Scale(config_frame, from_=0, to=30, command=self._update_deadzone)
         self.deadzone_slider.set(15)
         self.deadzone_slider.grid(row=0, column=1, padx=5)
+
+        # --- Restart and Shutdown Buttons (Top Right of Control Settings) ---
+        self.restart_btn = ttk.Button(config_frame, text="Restart Backend", command=lambda: self._send_special_command('restart'))
+        self.restart_btn.place(relx=0.77, rely=0.0001, relwidth=0.1, anchor='nw')
+        self.shutdown_btn = ttk.Button(config_frame, text="Shutdown Pico", command=lambda: self._send_special_command('shutdown'))
+        self.shutdown_btn.place(relx=0.98, rely=0.0001, relwidth=0.1, anchor='ne')
 
         # --- Visualization Panel ---
         vis_frame = ttk.LabelFrame(self.root, text="Controller Input")
@@ -122,6 +125,18 @@ class SoccerRobotController:
         else:
             self.toggle_log_btn.config(text="Enable Logging")
 
+    def _send_special_command(self, command):
+        if self.connected:
+            try:
+                cmd = {'command': command}
+                data = cbor2.dumps(cmd)
+                self.data_queue.put(data)
+                self._log(f"Sent {command} command")
+            except Exception as e:
+                self._log(f"Failed to send {command}: {str(e)}", "ERROR")
+        else:
+            self._log("Not connected to backend!", "ERROR")
+
     def _init_controller(self):
         pygame.init()
         pygame.joystick.init()
@@ -147,6 +162,7 @@ class SoccerRobotController:
         last_check = time.time()
         while not self.stop_flag.is_set():
             self._process_controls()
+            # Controller reconnection logic
             if not hasattr(self, 'joystick') or self.joystick is None:
                 if time.time() - last_check > 2:
                     pygame.joystick.quit()
