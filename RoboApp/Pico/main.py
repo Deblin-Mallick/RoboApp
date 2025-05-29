@@ -61,8 +61,8 @@ class SoccerRobot:
         self.watchdog_timer = utime.ticks_ms()
         self.safety_active = False
         self.last_cmd = {'lf': 0.0, 'lr': 0.0, 'rf': 0.0, 'rr': 0.0}
-        self.led = Pin("LED", Pin.OUT)  # Onboard LED
-        self.led.value(0)  # Start with LED off
+        self.led = Pin("LED", Pin.OUT)
+        self.led.value(0)
         self._connect_wifi()
         _thread.start_new_thread(self._safety_monitor, ())
         self._start_server()
@@ -90,103 +90,114 @@ class SoccerRobot:
             reset()
         ip = sta_if.ifconfig()[0]
         print(f"Connected. IP: {ip}")
-        self.led.value(1)  # LED ON when WiFi is connected
+        self.led.value(1)
 
     def _start_server(self):
-        s = socket.socket()
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(('0.0.0.0', 65432))
-        s.listen(1)
-        s.setblocking(False)
-        print("Server ready")
-        buffer = b""
-        expected_len = None
-        last_heartbeat = utime.ticks_ms()
-
-        poller = select.poll()
-        poller.register(s, select.POLLIN)
-        client_sock = None
-
         while True:
-            loop_start = utime.ticks_ms()
-            try:
-                # Connection timeout check
-                if client_sock and utime.ticks_diff(utime.ticks_ms(), last_heartbeat) > 30000:
-                    poller.unregister(client_sock)
-                    client_sock.close()
-                    client_sock = None
-                    buffer = b""
-                    expected_len = None
-                    print("Client connection timeout")
-                    self.led.value(1)  # LED ON: WiFi OK, no client
+            self.server_running = True
+            s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('0.0.0.0', 65432))
+            s.listen(1)
+            s.setblocking(False)
+            print("Server ready")
+            buffer = b""
+            expected_len = None
+            last_heartbeat = utime.ticks_ms()
+            poller = select.poll()
+            poller.register(s, select.POLLIN)
+            client_sock = None
 
-                # Accept new client
-                if not client_sock:
-                    events = poller.poll(10)
-                    for sock, event in events:
-                        if sock is s and event & select.POLLIN:
-                            client_sock, addr = s.accept()
-                            client_sock.setblocking(False)
-                            poller.register(client_sock, select.POLLIN)
-                            print(f"Client connected: {addr}")
-                            buffer = b""
-                            expected_len = None
-                            last_heartbeat = utime.ticks_ms()
-                            self.led.value(1)  # LED ON: client connected
-
-                # Process client data
-                if client_sock:
-                    events = poller.poll(0)
-                    for sock, event in events:
-                        if sock is client_sock and event & select.POLLIN:
-                            try:
-                                data = client_sock.recv(1024)
-                                if data:
-                                    buffer += data
-                                    last_heartbeat = utime.ticks_ms()
-                                    while True:
-                                        if expected_len is None:
-                                            if len(buffer) >= 4:
-                                                expected_len = int.from_bytes(buffer[:4], 'big')
-                                                buffer = buffer[4:]
+            while self.server_running:
+                loop_start = utime.ticks_ms()
+                try:
+                    if client_sock and utime.ticks_diff(utime.ticks_ms(), last_heartbeat) > 30000:
+                        poller.unregister(client_sock)
+                        client_sock.close()
+                        client_sock = None
+                        buffer = b""
+                        expected_len = None
+                        print("Client connection timeout")
+                        self.led.value(1)
+                    if not client_sock:
+                        events = poller.poll(10)
+                        for sock, event in events:
+                            if sock is s and event & select.POLLIN:
+                                client_sock, addr = s.accept()
+                                client_sock.setblocking(False)
+                                poller.register(client_sock, select.POLLIN)
+                                print(f"Client connected: {addr}")
+                                buffer = b""
+                                expected_len = None
+                                last_heartbeat = utime.ticks_ms()
+                                self.led.value(1)
+                    if client_sock:
+                        events = poller.poll(0)
+                        for sock, event in events:
+                            if sock is client_sock and event & select.POLLIN:
+                                try:
+                                    data = client_sock.recv(1024)
+                                    if data:
+                                        buffer += data
+                                        last_heartbeat = utime.ticks_ms()
+                                        while True:
+                                            if expected_len is None:
+                                                if len(buffer) >= 4:
+                                                    expected_len = int.from_bytes(buffer[:4], 'big')
+                                                    buffer = buffer[4:]
+                                                else:
+                                                    break
+                                            if expected_len is not None and len(buffer) >= expected_len:
+                                                msg = buffer[:expected_len]
+                                                buffer = buffer[expected_len:]
+                                                expected_len = None
+                                                if self._process_command(msg, client_sock):
+                                                    # If True is returned, break out for restart/shutdown
+                                                    s.close()
+                                                    return
                                             else:
                                                 break
-                                        if expected_len is not None and len(buffer) >= expected_len:
-                                            msg = buffer[:expected_len]
-                                            buffer = buffer[expected_len:]
-                                            expected_len = None
-                                            self._process_command(msg, client_sock)
-                                        else:
-                                            break
-                                else:
-                                    poller.unregister(client_sock)
-                                    client_sock.close()
-                                    client_sock = None
-                                    print("Client disconnected")
-                                    self.led.value(1)  # LED ON: WiFi OK, no client
-                            except OSError as e:
-                                if e.args[0] not in (11, 104):  # EAGAIN, ECONNRESET
-                                    poller.unregister(client_sock)
-                                    client_sock.close()
-                                    client_sock = None
-                                    print(f"Client error: {e}")
-                                    self.led.value(1)  # LED ON: WiFi OK, no client
-            except Exception as e:
-                print(f"Server error: {e}")
-                if client_sock:
-                    poller.unregister(client_sock)
-                    client_sock.close()
-                    client_sock = None
-                    self.led.value(1)  # LED ON: WiFi OK, no client
-
-            if utime.ticks_diff(utime.ticks_ms(), loop_start) > 100:
-                print(f"!!! CPU WARNING: Server loop took {utime.ticks_diff(utime.ticks_ms(), loop_start)} ms !!!")
-            gc.collect()
-            utime.sleep_ms(1)
+                                    else:
+                                        poller.unregister(client_sock)
+                                        client_sock.close()
+                                        client_sock = None
+                                        print("Client disconnected")
+                                        self.led.value(1)
+                                except OSError as e:
+                                    if e.args[0] not in (11, 104):
+                                        poller.unregister(client_sock)
+                                        client_sock.close()
+                                        client_sock = None
+                                        print(f"Client error: {e}")
+                                        self.led.value(1)
+                except Exception as e:
+                    print(f"Server error: {e}")
+                    if client_sock:
+                        poller.unregister(client_sock)
+                        client_sock.close()
+                        client_sock = None
+                        self.led.value(1)
+                if utime.ticks_diff(utime.ticks_ms(), loop_start) > 100:
+                    print(f"!!! CPU WARNING: Server loop took {utime.ticks_diff(utime.ticks_ms(), loop_start)} ms !!!")
+                gc.collect()
+                utime.sleep_ms(1)
 
     def _process_command(self, data, sock):
         try:
             cmd = cbor_loads(data)
+            # Handle special commands
+            if isinstance(cmd, dict) and 'command' in cmd:
+                if cmd['command'] == 'restart':
+                    print("Restart command received, restarting server...")
+                    self.led.value(0)
+                    self.server_running = False
+                    return True  # Signal to break server loop and restart
+                elif cmd['command'] == 'shutdown':
+                    print("Shutdown command received, resetting Pico...")
+                    self.led.value(0)
+                    utime.sleep(0.1)
+                    reset()
+                    return True
             self.watchdog_timer = utime.ticks_ms()
             lf = cmd.get('lf', 0)
             lr = cmd.get('lr', 0)
@@ -197,7 +208,6 @@ class SoccerRobot:
             self.lr_motor.set_speed(lr)
             self.rf_motor.set_speed(rf)
             self.rr_motor.set_speed(rr)
-            # Echo cmd_id for latency measurement
             if sock and 'cmd_id' in cmd:
                 resp = {'cmd_id': cmd['cmd_id']}
                 resp_data = cbor_dumps(resp)
@@ -207,6 +217,7 @@ class SoccerRobot:
                     pass
         except Exception as e:
             print(f"Command error: {repr(e)}")
+        return False
 
     def _safety_monitor(self):
         last_safety_state = None
@@ -220,7 +231,6 @@ class SoccerRobot:
                         motor.in1.value(0)
                         motor.in2.value(0)
                         motor.pwm.duty_u16(0)
-                    # Optional: Blink LED rapidly in emergency stop
                     for _ in range(6):
                         self.led.value(1)
                         utime.sleep_ms(100)
@@ -228,7 +238,7 @@ class SoccerRobot:
                         utime.sleep_ms(100)
                 else:
                     self.debug.log(f"Safety cleared (diff={diff})")
-                    self.led.value(1)  # LED ON: system safe
+                    self.led.value(1)
                 last_safety_state = in_safety
             self.safety_active = in_safety
             utime.sleep(0.1)
