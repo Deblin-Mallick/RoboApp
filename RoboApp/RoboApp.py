@@ -43,6 +43,12 @@ class SoccerRobotController:
         self.root.mainloop()
 
     def _setup_gui(self):
+        # --- Emergency Stop Button (always at the top) ---
+        button_frame = ttk.Frame(self.root)
+        button_frame.pack(fill='x', padx=10, pady=10)
+        self.estop_btn = ttk.Button(button_frame, text="EMERGENCY STOP", command=self._emergency_stop)
+        self.estop_btn.pack(side='left', padx=5, pady=5)
+
         # --- Connection Panel ---
         conn_frame = ttk.LabelFrame(self.root, text="Connection")
         conn_frame.pack(fill='x', padx=10, pady=5)
@@ -109,13 +115,9 @@ class SoccerRobotController:
         self.log_text.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
 
-        # --- Emergency Stop and Logging Toggle Buttons ---
-        button_frame = ttk.Frame(self.root)
-        button_frame.pack(fill='x', padx=10, pady=5)
-        self.estop_btn = ttk.Button(button_frame, text="EMERGENCY STOP", command=self._emergency_stop)
-        self.estop_btn.pack(side='left', padx=5, pady=5)
+        # --- Logging Toggle Button ---
         self.toggle_log_btn = ttk.Button(self.root, text="Disable Logging", command=self._toggle_logging)
-        self.toggle_log_btn.place(relx=0.97, rely=0.93, anchor='ne')  # Bottom right
+        self.toggle_log_btn.place(relx=0.97, rely=0.93, anchor='ne')
 
     def _toggle_logging(self):
         self.logging_enabled = not self.logging_enabled
