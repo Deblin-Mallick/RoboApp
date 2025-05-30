@@ -35,6 +35,7 @@ class SoccerRobotController:
         self.current_x = 150
         self.logging_enabled = True
         self.a_button_prev_state = False
+        self.no_controller_logged = False  # Prevents "No controller detected!" spam
 
         self._setup_gui()
         self._log("Event log test: If you see this, logging works!")
@@ -72,7 +73,7 @@ class SoccerRobotController:
         self.deadzone_slider.set(15)
         self.deadzone_slider.grid(row=0, column=1, padx=5)
 
-        # --- Inverst Toggle ---
+        # --- Invert X Axis Checkbox ---
         self.invert_x_var = tk.BooleanVar(value=self.invert_x)
         self.invert_x_checkbox = ttk.Checkbutton(
             config_frame,
@@ -129,7 +130,7 @@ class SoccerRobotController:
         # --- Logging Toggle Button ---
         self.toggle_log_btn = ttk.Button(self.root, text="Disable Logging", command=self._toggle_logging)
         self.toggle_log_btn.place(relx=0.97, rely=0.93, anchor='ne')
-    
+
     def _toggle_invert_x(self):
         self.invert_x = self.invert_x_var.get()
         self._log(f"Invert X Axis set to {self.invert_x}")
@@ -165,8 +166,11 @@ class SoccerRobotController:
             self.joystick = pygame.joystick.Joystick(0)
             self.joystick.init()
             self._log("Controller connected: " + self.joystick.get_name())
+            self.no_controller_logged = False  # Reset flag when controller is found
         else:
-            self._log("No controller detected!", "ERROR")
+            if not self.no_controller_logged:
+                self._log("No controller detected!", "ERROR")
+                self.no_controller_logged = True
 
     def _start_threads(self):
         threading.Thread(target=self._control_loop, daemon=True).start()
@@ -283,7 +287,7 @@ class SoccerRobotController:
                 steering_raw = self.joystick.get_axis(self.controller_mapping['right_x'])
                 if self.invert_x:
                     steering_raw = -steering_raw
-                
+
                 rt = (self.joystick.get_axis(5) + 1) / 2
                 lt = (self.joystick.get_axis(4) + 1) / 2
                 steering = self._process_axis(steering_raw)
@@ -308,7 +312,7 @@ class SoccerRobotController:
                     self._send_command(lf, lr, rf, rr)
                     self.last_lf, self.last_lr, self.last_rf, self.last_rr = lf, lr, rf, rr
 
-                # --- Xbox A button connect/disconnect toggle ---
+                # Xbox A button connect/disconnect toggle
                 a_button_current = self.joystick.get_button(self.controller_mapping['a_button'])
                 if a_button_current and not self.a_button_prev_state:
                     self._handle_connection()
