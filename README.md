@@ -1,20 +1,23 @@
-﻿# RoboApp – Soccer Robot Controller
+﻿# RoboApp: Soccer Robot Controller
 
-**RoboApp** is a real-time control system for a soccer robot, featuring a Raspberry Pi Pico backend and a Python/Tkinter frontend. It supports low-latency TCP communication with CBOR-encoded messages, a responsive GUI, and robust safety features to ensure reliable operation on the field.
+A real-time control system for a soccer robot using a Raspberry Pi Pico backend and a Python/Tkinter frontend.  
+The system features low-latency TCP communication with CBOR-encoded messages, a responsive GUI, and robust safety features.
 
 ---
 
 ## Features
 
-- 🎮 **Real-time Xbox/Gamepad control** of left and right motors.
-- ⚡ **Low-latency TCP communication** with compact CBOR-encoded messages.
-- 🖥️ **Python GUI frontend** with live controller input visualization and robot status.
-- 🧵 **Multithreaded architecture** for smooth GUI performance and reliable networking.
-- 🛡️ **Backend watchdog** stops motors if control commands are lost.
-- 🆘 **Emergency Stop button** built into the GUI.
-- 🧾 **Event log** for detailed debugging and status tracking.
-- 🎯 **Configurable deadzone** for joystick input filtering.
-- 🚫 **Non-commercial license** (see [License](#license)).
+- **Real-time control** of left and right motors via Xbox/compatible game controller.
+- **Compact binary communication** using CBOR for efficient, low-memory messaging.
+- **Python GUI frontend** with live visualization of controller inputs and robot status.
+- **Multithreaded architecture** for smooth GUI, responsive control, and reliable networking.
+- **Safety watchdog** on backend to stop motors if commands are lost.
+- **Emergency stop** button in GUI (always visible).
+- **Restart Backend** and **Shutdown Pico** buttons in GUI.
+- **Connect/Disconnect** via GUI or Xbox "A" button.
+- **Detailed debug logging** in the GUI event log.
+- **Configurable deadzone** for joystick inputs.
+- **Non-commercial license:** You may fork and modify, but **commercial use is prohibited** (see License section).
 
 ---
 
@@ -22,122 +25,109 @@
 
 - Raspberry Pi Pico (or compatible MicroPython board)
 - L298N motor driver (or equivalent)
-- Two DC motors (left and right wheel)
-- Xbox or compatible game controller
-- WiFi-enabled network for TCP communication
+- DC motors for left and right wheels
+- Xbox controller or compatible gamepad
+- WiFi network for TCP communication
 
 ---
 
 ## Software Requirements
 
-### Frontend (PC)
-- Python 3.7+
-- `pygame`
-- `numpy`
-- `scipy`
-- `cbor2`
-- `tkinter` (usually included with Python)
+- **Frontend (PC):**
+  - Python 3.7+
+  - `pygame`
+  - `numpy`
+  - `scipy`
+  - `cbor2`
+  - `tkinter` (usually included with Python)
 
-### Backend (Pico)
-- MicroPython firmware
-- `micropython-cbor` (upload `cbor.py` to Pico)
+- **Backend (Pico):**
+  - MicroPython firmware
+  - `micropython-cbor` library (upload `cbor.py` to Pico)
 
 ---
 
 ## Installation
 
 ### Frontend (PC)
-Install dependencies:
-```bash
+
+1. Install Python dependencies:
+
 pip install pygame numpy scipy cbor2
 
-Run the GUI:
+2. Run the GUI:
 
-bash
-Copy
-Edit
 python robot_controller.py
-Backend (Pico)
-Flash the MicroPython firmware to the Pico.
 
-Upload cbor.py and robot_driver.py using Thonny or ampy.
 
-Update your WiFi credentials in robot_driver.py:
+### Backend (Pico)
 
-python
-Copy
-Edit
-sta_if.connect('YourSSID', 'YourPassword')
-Run robot_driver.py on the Pico.
+1. Upload your MicroPython firmware to the Pico.
+2. Download [`cbor.py`](https://github.com/alexmrqt/micropython-cbor/blob/master/cbor.py) and upload it to the Pico using Thonny or ampy.
+3. Upload the backend script (`robot_driver.py`) to the Pico.
+4. Update WiFi credentials in `robot_driver.py`:
+ssid = 'YourSSID'
+password = 'YourPassword'
 
-Usage
-Connect your Xbox controller to the PC.
+5. Run the backend script on the Pico.
 
-Launch the frontend GUI.
+---
 
-Enter the robot's IP address and click Connect, or press the Xbox A button.
+## Usage
 
-Use:
+1. Connect your Xbox controller to the PC.
+2. Launch the frontend GUI.
+3. Enter the robot's IP address and click **Connect** (or use the Xbox "A" button).
+4. Use the right joystick for steering and triggers for throttle control.
+5. Monitor the live input visualization and debug logs.
+6. Use the **Emergency Stop** button to immediately stop the robot.
+7. Use **Restart Backend** and **Shutdown Pico** buttons for backend management.
 
-Right joystick for steering
+---
 
-Triggers for throttle control
+## Communication Protocol
 
-Monitor:
+- TCP socket connection on port `65432`.
+- Messages are CBOR-encoded dictionaries with:
+- `cmd_id`: int (for latency tracking)
+- `lf`, `lr`, `rf`, `rr`: float (-1.0 to 1.0) for motor speeds
+- Each message is prefixed with a 4-byte big-endian length header.
 
-Live input visualization
+---
 
-Event log for debug messages
+## Safety Features
 
-Use Emergency Stop to instantly halt the robot.
+- Backend watchdog stops motors if no commands received for 2 seconds.
+- Frontend prevents command spamming by sending only on significant input changes.
+- Emergency stop button immediately sends zero speed commands.
 
-Use Restart Backend or Shutdown Pico for backend control.
+---
 
-Communication Protocol
-Transport: TCP socket on port 65432
+## License
 
-Encoding: CBOR
+**MIT License + Commons Clause — Non-commercial use only**
 
-Message format: Dictionary with the following keys:
+This project is licensed under the MIT License with the Commons Clause restriction.  
+You may use, fork, and modify this code for **non-commercial purposes only**.  
+Commercial use (including selling, SaaS, or paid support) is strictly prohibited without a separate commercial license.
 
-json
-Copy
-Edit
-{
-  "timestamp": float,     // Unix time
-  "left": float,          // Left motor speed (-1.0 to 1.0)
-  "right": float          // Right motor speed (-1.0 to 1.0)
-}
-Framing: Each message is prefixed with a 4-byte big-endian length header.
+See the [LICENSE](LICENSE) file for full details.
 
-Safety Features
-⏱️ Backend watchdog halts motors if no commands received for 1 second.
+---
 
-🚫 Frontend prevents command spamming, sending only on significant input changes.
+## Acknowledgments
 
-🆘 Emergency Stop immediately sends zero-speed commands to both motors.
+- [MicroPython](https://micropython.org/)
+- [pygame](https://www.pygame.org/)
+- [CBOR](https://cbor.io/)
+- [Raspberry Pi Pico](https://www.raspberrypi.com/products/raspberry-pi-pico/)
 
-License
-MIT License + Commons Clause
+---
 
-This project is licensed under the MIT License with the Commons Clause restriction.
+## Contact
 
-✅ You may use, fork, and modify this code for non-commercial purposes.
+For questions or contributions, please open an issue or pull request on GitHub.
 
-❌ Commercial use (including resale, SaaS, paid support) is prohibited without a separate commercial license.
+---
 
-See the LICENSE file for full terms.
-
-Acknowledgments
-MicroPython
-
-pygame
-
-CBOR
-
-Raspberry Pi Pico
-
-Contact
-For questions, suggestions, or contributions, please open an issue or submit a pull request.
-
-Happy coding and good luck with your soccer robot!
+*Happy coding and good luck with your soccer robot!*
