@@ -14,6 +14,7 @@ class SoccerRobotController:
 
     def __init__(self):
         self.root = tk.Tk()
+        self.invert_x = False
         self.root.title("Soccer Robot Controller")
         self.root.geometry("1000x800")
 
@@ -71,6 +72,16 @@ class SoccerRobotController:
         self.deadzone_slider.set(15)
         self.deadzone_slider.grid(row=0, column=1, padx=5)
 
+        # --- Inverst Toggle ---
+        self.invert_x_var = tk.BooleanVar(value=self.invert_x)
+        self.invert_x_checkbox = ttk.Checkbutton(
+            config_frame,
+            text="Invert X Axis",
+            variable=self.invert_x_var,
+            command=self._toggle_invert_x
+        )
+        self.invert_x_checkbox.grid(row=0, column=3, padx=10)
+
         # --- Restart and Shutdown Buttons (Top Right of Control Settings) ---
         self.restart_btn = ttk.Button(config_frame, text="Restart Backend", command=lambda: self._send_special_command('restart'))
         self.restart_btn.place(relx=0.77, rely=0.0001, relwidth=0.1, anchor='nw')
@@ -118,6 +129,10 @@ class SoccerRobotController:
         # --- Logging Toggle Button ---
         self.toggle_log_btn = ttk.Button(self.root, text="Disable Logging", command=self._toggle_logging)
         self.toggle_log_btn.place(relx=0.97, rely=0.93, anchor='ne')
+    
+    def _toggle_invert_x(self):
+        self.invert_x = self.invert_x_var.get()
+        self._log(f"Invert X Axis set to {self.invert_x}")
 
     def _toggle_logging(self):
         self.logging_enabled = not self.logging_enabled
@@ -264,7 +279,11 @@ class SoccerRobotController:
         if hasattr(self, 'joystick') and self.joystick is not None:
             try:
                 pygame.event.pump()
+                # Read and invert X axis if needed
                 steering_raw = self.joystick.get_axis(self.controller_mapping['right_x'])
+                if self.invert_x:
+                    steering_raw = -steering_raw
+                
                 rt = (self.joystick.get_axis(5) + 1) / 2
                 lt = (self.joystick.get_axis(4) + 1) / 2
                 steering = self._process_axis(steering_raw)
