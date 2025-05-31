@@ -2,7 +2,7 @@ import network
 import usocket as socket
 import select
 import _thread
-from machine import Pin, PWM, reset, WDT
+from machine import Pin, PWM, reset
 import utime
 import gc
 from cbor import loads as cbor_loads, dumps as cbor_dumps
@@ -34,6 +34,7 @@ class MotorController:
         self.debug = debug
 
     def set_speed(self, target):
+        # Set motor speed with deadzone and minimum duty cycle
         if abs(target) < 0.02:
             target = 0.0
         min_duty = 0.35
@@ -67,19 +68,40 @@ class SoccerRobot:
         self.server_running = True
 
         # --- Start WiFi, safety monitor, and server ---
-        self._connect_wifi()
+        if not self._connect_wifi_with_reboot_once():
+            print("WiFi failed after reboot. Idling.")
+            self.led.value(0)
+            while True:
+                utime.sleep(1)
         _thread.start_new_thread(self._safety_monitor, ())
         self._start_server()
 
+    def _connect_wifi_with_reboot_once(self):
+        """
+        Try WiFi connect, reboot once if fail, then give up.
+        This prevents infinite reboot loops.
+        """
+        for attempt in range(2):  # Only try reboot once
+            if self._connect_wifi():
+                return True
+            print("WiFi failed, rebooting..." if attempt == 0 else "WiFi failed after reboot.")
+            if attempt == 0:
+                utime.sleep(1)
+                reset()
+        return False
+
     def _connect_wifi(self):
-        """Connect to WiFi and set LED status. Retries forever on failure."""
+        """
+        Connect to WiFi, retry up to 5 times, then fail.
+        LED blinks during attempts.
+        """
         sta_if = network.WLAN(network.STA_IF)
         sta_if.active(True)
         sta_if.config(pm=0xa11140)
         ssid = 'OpenWrt'
         password = 'iitmadras'
         print("Connecting to WiFi...")
-        while True:
+        for attempt in range(5):
             try:
                 sta_if.connect(ssid, password)
                 for _ in range(20):
@@ -90,29 +112,35 @@ class SoccerRobot:
                         print("WiFi connected.")
                         ip = sta_if.ifconfig()[0]
                         print(f"Connected to. IP: {ip}")
-                        return
+                        return True
                 print("WiFi not connected, retrying...")
                 self._blink_led(0.1, 5)
             except Exception as e:
                 print(f"WiFi error: {e}")
                 self._blink_led(0.1, 5)
             utime.sleep(2)
+        return False
 
     def _start_server(self):
-        """Main server loop with watchdog and error recovery."""
-        wdt = WDT(timeout=8000)
+        """
+        Main server loop with error recovery, no reboot loop.
+        If an error occurs, try to reconnect WiFi and restart the server.
+        """
         while True:
             try:
-                self._run_server(wdt)
+                self._run_server()
             except Exception as e:
                 print(f"Server error: {e}")
                 self._blink_led(0.05, 10)
-                utime.sleep(2)  # Wait before retrying
-                # WiFi may have dropped, so reconnect
+                utime.sleep(2)
+                # WiFi may have dropped, so reconnect (but do not reboot)
                 self._connect_wifi()
 
-    def _run_server(self, wdt):
-        """TCP server for robot control, feeds watchdog regularly."""
+    def _run_server(self):
+        """
+        TCP server for robot control.
+        Accepts commands from frontend and controls motors.
+        """
         s = socket.socket()
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(('0.0.0.0', 65432))
@@ -126,8 +154,6 @@ class SoccerRobot:
         expected_len = None
 
         while True:
-            wdt.feed()  # Feed watchdog to prevent reboot
-
             # Accept new client if none connected
             if not client_sock:
                 self.led.value(1)  # Solid LED: ready for client
@@ -188,7 +214,9 @@ class SoccerRobot:
             gc.collect()
 
     def _process_command(self, data, sock):
-        """Process incoming commands, handle restart/shutdown."""
+        """
+        Process incoming commands, handle restart/shutdown.
+        """
         try:
             cmd = cbor_loads(data)
             # Special commands from frontend
@@ -201,7 +229,10 @@ class SoccerRobot:
                     print("Performing safe shutdown...")
                     self._blink_led(0.3, 5)
                     utime.sleep(1)
-                    reset()
+                    # Instead of reset(), just idle forever
+                    self.led.value(0)
+                    while True:
+                        utime.sleep(1)
             # Normal motor command
             self.watchdog_timer = utime.ticks_ms()
             lf = cmd.get('lf', 0)
@@ -227,28 +258,33 @@ class SoccerRobot:
         return False
 
     def _safety_monitor(self):
-        """Emergency stop monitoring with LED feedback and DebugLogger."""
+        """
+        Emergency stop monitoring with LED feedback and DebugLogger.
+        Stops all motors if no command received for 2 seconds.
+        """
         last_safety_state = False
         while True:
             diff = utime.ticks_diff(utime.ticks_ms(), self.watchdog_timer)
             in_safety = diff > 2000 and all(abs(v) < 0.02 for v in self.last_cmd.values())
             if in_safety != last_safety_state:
                 if in_safety:
-                    self.debug.log("EMERGENCY STOP")  # Only logs if enabled
+                    self.debug.log("EMERGENCY STOP")
                     for motor in [self.lf_motor, self.lr_motor, self.rf_motor, self.rr_motor]:
                         motor.in1.value(0)
                         motor.in2.value(0)
                         motor.pwm.duty_u16(0)
                     self._blink_led(0.1, 10)
                 else:
-                    self.debug.log("Safety cleared")  # Only logs if enabled
+                    self.debug.log("Safety cleared")
                     self.led.value(1)
                 last_safety_state = in_safety
                 self.safety_active = in_safety
             utime.sleep(0.1)
 
     def _blink_led(self, interval, count):
-        """Blink the onboard LED for status feedback."""
+        """
+        Blink the onboard LED for status feedback.
+        """
         for _ in range(count):
             self.led.value(1)
             utime.sleep(interval)
@@ -257,5 +293,9 @@ class SoccerRobot:
         self.led.value(1)  # Restore to normal state (solid on)
 
 if __name__ == "__main__":
-    SoccerRobot()
-
+    try:
+        SoccerRobot()
+    except Exception as e:
+        print(f"Critical error at startup: {e}. Rebooting once.")
+        utime.sleep(1)
+        reset()
