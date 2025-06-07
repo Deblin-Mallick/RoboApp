@@ -57,7 +57,7 @@ pip install pygame numpy scipy cbor2
 
 2. Run the GUI:
 
-python robot_controller.py
+python roboapp.py
 
 
 ### Backend (Pico)
