@@ -64,8 +64,8 @@ python robot_controller.py
 
 1. Upload your MicroPython firmware to the Pico.
 2. Download [`cbor.py`](https://github.com/alexmrqt/micropython-cbor/blob/master/cbor.py) and upload it to the Pico using Thonny or ampy.
-3. Upload the backend script (`robot_driver.py`) to the Pico.
-4. Update WiFi credentials in `robot_driver.py`:
+3. Upload the backend script (`main.py`) to the Pico.
+4. Update WiFi credentials in `main.py`:
 ssid = 'YourSSID'
 password = 'YourPassword'
 
